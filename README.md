@@ -34,7 +34,20 @@ GOOGLE_APPLICATION_CREDENTIALS_JSON='{"type":"service_account",...}'
 
 > **Tip:** `GOOGLE_APPLICATION_CREDENTIALS_JSON` can be omitted when the server is running in an environment that already exposes Google Cloud credentials (e.g., via Workload Identity or a credentials file set by `GOOGLE_APPLICATION_CREDENTIALS`).
 
-### 3. Run the server
+### 3. Fast local demo (no credentials required)
+
+If you only want to experience the UX, you can ignore the `.env` step above:
+
+1. Run `npm install` (only needs to be done once).
+2. Start the server with `npm start`.
+3. Open `http://localhost:3000/?name=Budi&month=Juni` in your browser.
+
+The form will submit successfully, and the server will log warnings that Gemini
+transcription, Google Sheets, and Cloud Storage integrations were skipped.
+Everything else—step validation, microphone prompts, recording playback—works as
+it will in production, so you can fully demo the flow without any API keys.
+
+### 4. Run the server (with integrations configured)
 
 ```bash
 npm start
@@ -42,7 +55,7 @@ npm start
 
 The Express server serves the single-page app at `http://localhost:3000` and exposes `POST /api/reviews` for submissions.
 
-### 4. Testing the flow
+### 5. Testing the flow
 
 Open `http://localhost:3000/?name=Budi&month=Juni` to experience the review journey with pre-filled context. When you reach the feedback steps, grant microphone access to capture your responses.
 
