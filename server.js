@@ -5,7 +5,9 @@ import multer from "multer";
 import dotenv from "dotenv";
 import { google } from "googleapis";
 import { Storage } from "@google-cloud/storage";
-import fetch from "node-fetch";
+import { createFFmpeg } from "@ffmpeg/ffmpeg";
+import { pipeline as createPipeline } from "@xenova/transformers";
+import { randomUUID } from "crypto";
 
 dotenv.config();
 
@@ -95,51 +97,70 @@ app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
 });
 
-async function transcribeAudio(buffer, label) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.warn(`GEMINI_API_KEY tidak tersedia. Melewatkan transkripsi untuk ${label}.`);
-    return "";
+const WHISPER_MODEL = process.env.WHISPER_MODEL || "Xenova/whisper-small";
+
+const ffmpeg = createFFmpeg({
+  log: false,
+  corePath: path.resolve(__dirname, "node_modules/@ffmpeg/core/dist/ffmpeg-core.js")
+});
+
+let ffmpegLoading;
+async function ensureFfmpegLoaded() {
+  if (!ffmpegLoading) {
+    ffmpegLoading = ffmpeg.load().catch(error => {
+      ffmpegLoading = undefined;
+      throw error;
+    });
   }
+  await ffmpegLoading;
+}
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-latest:generateContent?key=${apiKey}`;
-  const base64 = buffer.toString("base64");
+let whisperPipelinePromise;
+async function getWhisperPipeline() {
+  if (!whisperPipelinePromise) {
+    whisperPipelinePromise = createPipeline("automatic-speech-recognition", WHISPER_MODEL).catch(error => {
+      whisperPipelinePromise = undefined;
+      throw error;
+    });
+  }
+  return whisperPipelinePromise;
+}
 
+let ffmpegQueue = Promise.resolve();
+function queueFfmpeg(action) {
+  const run = ffmpegQueue.then(action, action);
+  ffmpegQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function transcribeAudio(buffer, label) {
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: "The following audio is in Indonesian. Please transcribe it accurately and verbatim." },
-              {
-                inline_data: {
-                  mime_type: "audio/webm",
-                  data: base64
-                }
-              }
-            ]
-          }
-        ]
-      })
+    const wavBuffer = await queueFfmpeg(async () => {
+      await ensureFfmpegLoaded();
+
+      const inputName = `${randomUUID()}-input.webm`;
+      const outputName = `${randomUUID()}-output.wav`;
+
+      ffmpeg.FS("writeFile", inputName, new Uint8Array(buffer));
+      await ffmpeg.run("-i", inputName, "-ar", "16000", "-ac", "1", "-c:a", "pcm16le", outputName);
+      const wavData = ffmpeg.FS("readFile", outputName);
+      ffmpeg.FS("unlink", inputName);
+      ffmpeg.FS("unlink", outputName);
+
+      return Buffer.from(wavData);
     });
 
-    if (!response.ok) {
-      const message = await response.text();
-      console.error("Gemini API error", message);
-      return "";
-    }
+    const whisper = await getWhisperPipeline();
+    const result = await whisper(wavBuffer, {
+      chunk_length_s: 30,
+      stride_length_s: 5,
+      language: "id"
+    });
 
-    const data = await response.json();
-    const transcript = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    return transcript || "";
+    const transcript = typeof result?.text === "string" ? result.text.trim() : "";
+    return transcript;
   } catch (error) {
-    console.error(`Gagal menghubungi Gemini untuk ${label}`, error.message);
+    console.error(`Gagal mentranskripsi dengan Whisper untuk ${label}`, error.message);
     return "";
   }
 }

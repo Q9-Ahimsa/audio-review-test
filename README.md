@@ -7,7 +7,7 @@ Project Vocal Review is a minimal end-to-end prototype that demonstrates the mon
 - **Five-step guided flow** that mirrors the PRD: welcome, quantitative score, peer nominations, and two voice feedback screens.
 - **MediaRecorder-based audio capture** with re-record and playback controls. Navigation is blocked until each step is complete.
 - **Single submission payload** that bundles score, nominations, and audio blobs.
-- **Backend intake API** that uploads raw audio to Google Cloud Storage, requests a Gemini 2.5 Pro transcription, and appends a fully structured row to Google Sheets.
+- **Backend intake API** that uploads raw audio to Google Cloud Storage, transcribes feedback locally with Whisper, and appends a fully structured row to Google Sheets.
 - **Environment-driven integrations** so the prototype works locally without credentials and integrates with Google Cloud services once they are provided.
 
 ## Getting Started
@@ -24,15 +24,17 @@ Create a `.env` file in the project root with the variables below. For local pro
 
 ```ini
 PORT=3000
-GEMINI_API_KEY=your_gemini_api_key
 GCP_AUDIO_BUCKET=your_private_bucket
 GOOGLE_SHEETS_ID=your_sheet_id
 GOOGLE_SERVICE_ACCOUNT_EMAIL=service-account@project.iam.gserviceaccount.com
 GOOGLE_SERVICE_ACCOUNT_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 GOOGLE_APPLICATION_CREDENTIALS_JSON='{"type":"service_account",...}'
+WHISPER_MODEL=Xenova/whisper-small # optional override
 ```
 
 > **Tip:** `GOOGLE_APPLICATION_CREDENTIALS_JSON` can be omitted when the server is running in an environment that already exposes Google Cloud credentials (e.g., via Workload Identity or a credentials file set by `GOOGLE_APPLICATION_CREDENTIALS`).
+>
+> `WHISPER_MODEL` is optional and lets you pick any Whisper checkpoint published by [Xenova](https://huggingface.co/Xenova) on Hugging Face. Omit it to stick with the default `Xenova/whisper-small` balance between speed and accuracy.
 
 ### 3. Fast local demo (no credentials required)
 
@@ -42,8 +44,10 @@ If you only want to experience the UX, you can ignore the `.env` step above:
 2. Start the server with `npm start`.
 3. Open `http://localhost:3000/?name=Budi&month=Juni` in your browser.
 
-The form will submit successfully, and the server will log warnings that Gemini
-transcription, Google Sheets, and Cloud Storage integrations were skipped.
+The form will submit successfully, and the server will log warnings that Whisper
+model downloads, Google Sheets, and Cloud Storage integrations were skipped when applicable.
+On the first recording you submit, the server may take a few seconds to download
+the Whisper model weights before finishing transcription.
 Everything else—step validation, microphone prompts, recording playback—works as
 it will in production, so you can fully demo the flow without any API keys.
 
@@ -61,7 +65,9 @@ Open `http://localhost:3000/?name=Budi&month=Juni` to experience the review jour
 
 ### Implementation Notes
 
-- **Audio transcription:** The server sends each audio blob to Gemini 2.5 Pro with an Indonesian transcription prompt. If the API key is missing or the request fails, the transcription is left blank but the request still resolves so that HR receives the rest of the payload.
+- **Audio transcription:** The server converts each WebM recording to mono WAV, then runs it through the open-source Whisper model (default: `Xenova/whisper-small`) directly in Node.js. The first transcription triggers a one-time model download to the Transformers cache. If the download or inference fails, the transcript is left blank but the submission still succeeds so HR keeps the rest of the payload.
+- **Optional Whisper tuning:** Override the default model by setting `WHISPER_MODEL` in `.env` (for example `Xenova/whisper-base`). Heavier models improve accuracy at the cost of longer processing time.
+- **Cache control:** Set `TRANSFORMERS_CACHE=/path/to/cache` before starting the server if you want to pin where the Whisper weights are stored between runs (handy for containerized deployments).
 - **Google Sheets:** Rows are appended to columns A–J in the configured spreadsheet, matching the MVP schema. Missing credentials emit warnings and skip the append to avoid crashing the submission.
 - **Cloud Storage archival:** Audio files are uploaded as `<name>_<month>_<label>.<ext>` to help HR trace submissions. Files are kept private by default. When no bucket is configured the upload is skipped with a console warning.
 - **Front-end validation:** “Next” and “Submit” buttons remain disabled until the current step meets its requirement. Recordings can be re-done before submission, and previously created `ObjectURL`s are revoked to prevent memory leaks.
